@@ -1,55 +1,48 @@
-import { withRetry, RetryOptions } from "../utils/retry";
 
-// Contributor: 1132dadf | 2026-09-30 | Windows 11, x86_64
 
-export interface JsonRpcRequest {
-    jsonrpc: string;
-    method: string;
-    params?: any[];
-    id: number;
-}
+/**
+ * Deploy a smart contract to the chain
+ * @param abi Contract ABI
+ * @param bytecode Contract creation bytecode
+ * @param args Constructor arguments
+ * @param confirmations Number of block confirmations to wait for
+ * @returns Deployment receipt with address, txHash, gasUsed
+ */
+public async deployContract(
+        abi: any[],
+        bytecode: string,
+        args: any[] = [],
+        confirmations: number = 1
+    ): Promise<{
+            address: string;
+            txHash: string;
+            gasUsed: string;
+            blockNumber: number;
+    }> {
+        // Encode constructor args using ABI
+        const params = this.abiCoder.encodeParameters(
+                    abi.filter(item => item.type === "constructor")[0]?.inputs || [],
+                    args
+                );
+        const data = bytecode + params.slice(2);
 
-export interface JsonRpcResponse {
-    jsonrpc: string;
-    result?: any;
-    error?: { code: number; message: string };
-    id: number;
-}
+    // Send deployment transaction
+    const txHash = await this.sendTransaction({
+                data: data,
+    });
 
-export class RpcProvider {
-    private url: string;
-    private retryOptions?: RetryOptions;
-    private nextId = 1;
-    private timeoutMs = 10000;
+    // Wait for transaction receipt
+    let receipt = await this.waitForTransactionReceipt(txHash);
 
-  constructor(url: string, retryOptions?: RetryOptions) {
-        this.url = url;
-        this.retryOptions = retryOptions;
-  }
+    // Wait for additional confirmations
+    if (confirmations > 0) {
+                await this.waitForBlock(Number(receipt.blockNumber) + confirmations);
+    }
 
-  async call(method: string, params?: any[]): Promise<any> {
-        return withRetry(async () => {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-                try {
-                          const request: JsonRpcRequest = {
-                                      jsonrpc: "2.0",
-                                      method,
-                                      params: params ?? [],
-                                      id: this.nextId++,
-                          };
-                          const res = await fetch(this.url, {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify(request),
-                                      signal: controller.signal,
-                          });
-                          const data: JsonRpcResponse = await res.json();
-                          if (data.error) throw new Error(data.error.message);
-                          return data.result;
-                } finally {
-                          clearTimeout(timeout);
-                }
-        }, this.retryOptions);
-  }
+    return {
+                address: receipt.contractAddress,
+                txHash: txHash,
+                gasUsed: receipt.gasUsed,
+                blockNumber: Number(receipt.blockNumber),
+    };
 }
