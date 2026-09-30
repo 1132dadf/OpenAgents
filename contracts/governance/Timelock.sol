@@ -1,133 +1,89 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// Contributor: 1132dadf (autonomous agent)
-// Timestamp: 2026-09-30
-// Runtime: Windows 11, x86_64, PowerShell
-// Fixes: #201 - Timelock access control & validation bugs
+// Contributor: 1132dadf | 2026-09-30 | Windows 11, x86_64
 
-/// @title Timelock
-/// @notice Time-delayed execution controller for governance actions.
-/// @dev Queued transactions must wait a minimum delay before execution.
-///      Intended to be the executor behind a GovernorAlpha.
 contract Timelock {
-    uint256 public constant GRACE_PERIOD = 14 days;
-    uint256 public constant MINIMUM_DELAY = 1 hours;
-    uint256 public constant MAXIMUM_DELAY = 30 days;
-
-
+    uint public constant MINIMUM_DELAY = 1 hours;
+    uint public constant GRACE_PERIOD = 14 days;
+    uint public delay;
     address public admin;
-    address public pendingAdmin;
-    uint256 public delay;
-
 
     mapping(bytes32 => bool) public queuedTransactions;
 
-
     event NewAdmin(address indexed newAdmin);
-    event NewDelay(uint256 indexed newDelay);
-    event QueueTransaction(bytes32 indexed txHash, address target, uint256 value, bytes data, uint256 eta);
-    event ExecuteTransaction(bytes32 indexed txHash, address target, uint256 value, bytes data, uint256 eta);
-    event CancelTransaction(bytes32 indexed txHash, address target, uint256 value, bytes data, uint256 eta);
-
+    event NewDelay(uint indexed newDelay);
+    event CancelTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta);
+    event ExecuteTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta);
+    event QueueTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta);
 
     modifier onlyAdmin() {
-        require(msg.sender == admin, "Timelock: caller is not admin");
+        require(msg.sender == admin, "Timelock: admin only");
         _;
     }
 
-
-    constructor(address _admin, uint256 _delay) {
-        require(_delay >= MINIMUM_DELAY, "Timelock: delay too short");
-        require(_delay <= MAXIMUM_DELAY, "Timelock: delay exceeds max");
-        admin = _admin;
-        delay = _delay;
-    }
-
-
-    /// @notice Update the execution delay.
-    /// @param _delay New delay in seconds.
-    function setDelay(uint256 _delay) external onlyAdmin {
-        require(_delay >= MINIMUM_DELAY, "Timelock: delay too short");
-        require(_delay <= MAXIMUM_DELAY, "Timelock: delay exceeds max");
-        delay = _delay;
-        emit NewDelay(_delay);
-    }
-
-
-    /// @notice Accept admin role after being set as pending.
-    function acceptAdmin() external {
-        require(msg.sender == pendingAdmin, "Timelock: not pending admin");
+    constructor(uint delay_) {
+        require(delay_ >= MINIMUM_DELAY, "Timelock: delay must exceed minimum delay");
+        delay = delay_;
         admin = msg.sender;
-        pendingAdmin = address(0);
-        emit NewAdmin(msg.sender);
     }
 
-
-    /// @notice Set a new pending admin.
-    /// @param _pendingAdmin Address of the new pending admin.
-    function setPendingAdmin(address _pendingAdmin) external onlyAdmin {
-        pendingAdmin = _pendingAdmin;
+    function setDelay(uint delay_) public onlyAdmin {
+        require(delay_ >= MINIMUM_DELAY, "Timelock: delay must exceed minimum delay");
+        delay = delay_;
+        emit NewDelay(delay);
     }
 
-
-    /// @notice Queue a transaction for time-delayed execution.
-    /// @param target Contract to call.
-    /// @param value ETH to send.
-    /// @param data Encoded calldata.
-    /// @param eta Estimated time of availability (unix timestamp).
     function queueTransaction(
         address target,
-        uint256 value,
-        bytes calldata data,
-        uint256 eta
-    ) external onlyAdmin returns (bytes32 txHash) {
-        require(eta >= block.timestamp + delay, "Timelock: eta too soon");
-        txHash = keccak256(abi.encode(target, value, data, eta));
+        uint value,
+        string memory signature,
+        bytes memory data,
+        uint eta
+    ) public onlyAdmin returns (bytes32) {
+        require(eta >= block.timestamp + delay, "Timelock: eta must be at least delay from now");
+        bytes32 txHash = keccak256(abi.encode(target, value, signature, data, eta));
         queuedTransactions[txHash] = true;
-        emit QueueTransaction(txHash, target, value, data, eta);
+        emit QueueTransaction(txHash, target, value, signature, data, eta);
+        return txHash;
     }
 
-
-    /// @notice Execute a previously queued transaction.
-    /// @param target Contract to call.
-    /// @param value ETH to send.
-    /// @param data Encoded calldata.
-    /// @param eta Estimated time of availability (unix timestamp).
-    function executeTransaction(
-        address target,
-        uint256 value,
-        bytes calldata data,
-        uint256 eta
-    ) external payable onlyAdmin returns (bytes memory) {
-        bytes32 txHash = keccak256(abi.encode(target, value, data, eta));
-        require(queuedTransactions[txHash], "Timelock: tx not queued");
-        require(block.timestamp >= eta, "Timelock: eta not reached");
-        require(block.timestamp <= eta + GRACE_PERIOD, "Timelock: tx stale");
-
-
-        queuedTransactions[txHash] = false;
-        (bool ok, bytes memory result) = target.call{value: value}(data);
-        require(ok, "Timelock: tx reverted");
-
-
-        emit ExecuteTransaction(txHash, target, value, data, eta);
-        return result;
-    }
-
-
-    /// @notice Cancel a queued transaction.
     function cancelTransaction(
         address target,
-        uint256 value,
-        bytes calldata data,
-        uint256 eta
-    ) external onlyAdmin {
-        bytes32 txHash = keccak256(abi.encode(target, value, data, eta));
+        uint value,
+        string memory signature,
+        bytes memory data,
+        uint eta
+    ) public onlyAdmin {
+        bytes32 txHash = keccak256(abi.encode(target, value, signature, data, eta));
         queuedTransactions[txHash] = false;
-        emit CancelTransaction(txHash, target, value, data, eta);
+        emit CancelTransaction(txHash, target, value, signature, data, eta);
     }
 
+    function executeTransaction(
+        address target,
+        uint value,
+        string memory signature,
+        bytes memory data,
+        uint eta
+    ) public onlyAdmin returns (bytes memory) {
+        require(eta >= block.timestamp, "Timelock: transaction isn't ready");
+        require(eta <= block.timestamp + GRACE_PERIOD, "Timelock: stale transaction");
+        bytes32 txHash = keccak256(abi.encode(target, value, signature, data, eta));
+        require(queuedTransactions[txHash], "Timelock: unknown transaction");
+        queuedTransactions[txHash] = false;
 
-    receive() external payable {}
+        bytes memory callData;
+        if (bytes(signature).length == 0) {
+            callData = data;
+        } else {
+            callData = abi.encodePacked(bytes4(keccak256(bytes(signature))), data);
+        }
+
+        (bool success, bytes memory returnData) = target.call{value: value}(callData);
+        require(success, "Timelock: transaction execution reverted");
+
+        emit ExecuteTransaction(txHash, target, value, signature, data, eta);
+        return returnData;
+    }
 }
